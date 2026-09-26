@@ -1,0 +1,1587 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Camera Overlay Teleprompter</title>
+  <style>
+    /* Reset & base */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+    }
+
+    body {
+      background: #090909;
+      color: #fff;
+      overflow: hidden;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    #root {
+      height: 100vh;
+      width: 100vw;
+      position: relative;
+    }
+
+    /* Main container – full screen camera */
+    .app {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      overflow: hidden;
+    }
+
+    /* Live camera video */
+    .camera-video {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1); /* mirror by default */
+      z-index: 1;
+    }
+
+    .camera-video.no-mirror {
+      transform: scaleX(1);
+    }
+
+    /* Teleprompter overlay layer */
+    .teleprompter-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      pointer-events: none; /* allow clicks to pass to controls, but we'll re-enable on scroll area */
+    }
+
+    /* The scrollable script viewport */
+    .script-viewport {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scroll-behavior: smooth;
+      padding: 0 12px;
+      pointer-events: auto; /* allow scrolling */
+      -webkit-overflow-scrolling: touch;
+      position: relative;
+      /* Hide scrollbar for a cleaner look */
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.2) transparent;
+    }
+
+    .script-viewport::-webkit-scrollbar {
+      width: 4px;
+    }
+    .script-viewport::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .script-viewport::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.2);
+      border-radius: 4px;
+    }
+
+    /* Script content wrapper – gets translated for auto-scroll */
+    .script-content {
+      padding: 12px 0 180px 0; /* bottom padding to allow reading last lines */
+      transition: transform 0.05s linear;
+      will-change: transform;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* Each paragraph */
+    .script-paragraph {
+      width: 100%;
+      max-width: var(--text-width, 800px);
+      margin: 0 auto 1.2em auto;
+      line-height: var(--line-height, 1.6);
+      font-size: var(--font-size, 36px);
+      font-weight: var(--font-weight, 500);
+      text-align: var(--text-align, center);
+      color: #fff;
+      text-shadow: 0 2px 12px rgba(0,0,0,0.7), 0 0 4px rgba(0,0,0,0.5);
+      background: rgba(0, 0, 0, var(--overlay-opacity, 0.35));
+      padding: 0.4em 0.8em;
+      border-radius: 8px;
+      backdrop-filter: blur(0px);
+      transition: background 0.1s;
+      word-break: break-word;
+    }
+
+    /* Highlight current line (simulated by highlighting paragraphs close to guide) */
+    .script-paragraph.highlight {
+      background: rgba(0, 0, 0, calc(var(--overlay-opacity, 0.35) + 0.15));
+      color: #fff;
+    }
+
+    /* Reading guide */
+    .reading-guide {
+      position: absolute;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      background: rgba(255, 255, 255, 0.6);
+      box-shadow: 0 0 12px rgba(255,255,255,0.4);
+      z-index: 10;
+      pointer-events: none;
+      transition: top 0.1s ease;
+    }
+
+    .reading-guide::before,
+    .reading-guide::after {
+      content: '';
+      position: absolute;
+      width: 12px;
+      height: 12px;
+      background: rgba(255,255,255,0.9);
+      border-radius: 50%;
+      top: -5px;
+    }
+    .reading-guide::before { left: 8px; }
+    .reading-guide::after { right: 8px; }
+
+    /* Bottom controls bar – floating, semi-transparent */
+    .control-bar {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      z-index: 20;
+      padding: 12px 20px 16px 20px;
+      background: linear-gradient(transparent, rgba(9, 9, 9, 0.85) 40%, rgba(9, 9, 9, 0.95));
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      pointer-events: auto;
+      backdrop-filter: blur(4px);
+      border-top: 1px solid rgba(255,255,255,0.08);
+    }
+
+    /* Timer & recording status */
+    .recording-status {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      color: #fff;
+      background: rgba(0,0,0,0.5);
+      padding: 6px 20px;
+      border-radius: 40px;
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .rec-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #EF4444;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.9); }
+      100% { opacity: 1; transform: scale(1); }
+    }
+
+    .timer {
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: "tnum";
+    }
+
+    /* Main controls row */
+    .controls-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      width: 100%;
+      max-width: 1000px;
+    }
+
+    /* Buttons */
+    .btn {
+      background: #18181B;
+      border: 1px solid rgba(255,255,255,0.12);
+      color: #fff;
+      border-radius: 40px;
+      padding: 10px 22px;
+      font-size: 15px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, transform 0.1s;
+      white-space: nowrap;
+      user-select: none;
+      min-height: 44px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+
+    .btn:hover {
+      background: #27272A;
+      border-color: rgba(255,255,255,0.2);
+    }
+
+    .btn:active {
+      transform: scale(0.97);
+    }
+
+    .btn.primary {
+      background: #fff;
+      color: #090909;
+      border-color: #fff;
+      font-weight: 600;
+    }
+    .btn.primary:hover {
+      background: #e4e4e7;
+    }
+
+    .btn.record {
+      background: #EF4444;
+      border-color: #EF4444;
+      color: #fff;
+      font-weight: 600;
+    }
+    .btn.record:hover {
+      background: #dc2626;
+    }
+
+    .btn.secondary {
+      background: transparent;
+      border-color: rgba(255,255,255,0.2);
+    }
+
+    .btn.icon {
+      padding: 10px 14px;
+      font-size: 18px;
+      min-width: 44px;
+    }
+
+    /* Slider group in bottom bar */
+    .slider-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(0,0,0,0.4);
+      padding: 4px 16px;
+      border-radius: 40px;
+      backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.08);
+      font-size: 14px;
+      color: #A1A1AA;
+      min-height: 44px;
+    }
+
+    .slider-group input[type="range"] {
+      width: 110px;
+      accent-color: #fff;
+      background: transparent;
+      cursor: pointer;
+      height: 4px;
+      border-radius: 2px;
+    }
+
+    .slider-group span {
+      color: #fff;
+      font-weight: 500;
+      min-width: 40px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Top-left script editor panel (toggleable) */
+    .editor-panel {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      z-index: 30;
+      width: 340px;
+      max-height: 70vh;
+      background: rgba(24, 24, 27, 0.92);
+      backdrop-filter: blur(16px);
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.08);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+      transition: transform 0.2s ease, opacity 0.2s ease;
+      pointer-events: auto;
+    }
+
+    .editor-panel.hidden {
+      transform: translateX(-120%);
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .editor-panel h3 {
+      font-size: 16px;
+      font-weight: 600;
+      color: #fff;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .editor-panel textarea {
+      width: 100%;
+      height: 200px;
+      background: #090909;
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 10px;
+      color: #fff;
+      padding: 12px;
+      font-size: 14px;
+      line-height: 1.5;
+      resize: vertical;
+      outline: none;
+      font-family: inherit;
+    }
+
+    .editor-panel textarea:focus {
+      border-color: rgba(255,255,255,0.3);
+    }
+
+    .editor-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .editor-actions .btn {
+      padding: 8px 14px;
+      font-size: 13px;
+      min-height: 36px;
+    }
+
+    .saved-scripts {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 120px;
+      overflow-y: auto;
+    }
+
+    .saved-script-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(255,255,255,0.05);
+      padding: 6px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .saved-script-item:hover {
+      background: rgba(255,255,255,0.12);
+    }
+
+    .saved-script-item .delete-script {
+      color: #A1A1AA;
+      font-size: 16px;
+      cursor: pointer;
+      padding: 0 4px;
+    }
+    .saved-script-item .delete-script:hover {
+      color: #EF4444;
+    }
+
+    /* Settings panel (right side) */
+    .settings-panel {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      z-index: 30;
+      width: 300px;
+      max-height: 85vh;
+      overflow-y: auto;
+      background: rgba(24, 24, 27, 0.92);
+      backdrop-filter: blur(16px);
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.08);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+      transition: transform 0.2s ease, opacity 0.2s ease;
+      pointer-events: auto;
+    }
+
+    .settings-panel.hidden {
+      transform: translateX(120%);
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .settings-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .settings-group label {
+      font-size: 13px;
+      font-weight: 500;
+      color: #A1A1AA;
+      display: flex;
+      justify-content: space-between;
+    }
+
+    .settings-group input[type="range"] {
+      width: 100%;
+      accent-color: #fff;
+      height: 4px;
+      border-radius: 2px;
+      background: rgba(255,255,255,0.15);
+      cursor: pointer;
+    }
+
+    .settings-group select {
+      background: #090909;
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #fff;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 14px;
+      outline: none;
+      cursor: pointer;
+      width: 100%;
+    }
+
+    .settings-group select:focus {
+      border-color: rgba(255,255,255,0.3);
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 14px;
+      color: #fff;
+      padding: 4px 0;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      background: #3F3F46;
+      border-radius: 40px;
+      cursor: pointer;
+      transition: background 0.2s;
+      border: none;
+      outline: none;
+    }
+
+    .toggle-switch.active {
+      background: #fff;
+    }
+
+    .toggle-switch::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+
+    .toggle-switch.active::after {
+      transform: translateX(20px);
+      background: #090909;
+    }
+
+    /* Fullscreen focus mode – hide panels */
+    .app.focus-mode .editor-panel,
+    .app.focus-mode .settings-panel,
+    .app.focus-mode .control-bar .controls-row .btn:not(.focus-visible),
+    .app.focus-mode .slider-group {
+      display: none !important;
+    }
+
+    .app.focus-mode .control-bar {
+      background: linear-gradient(transparent, rgba(9, 9, 9, 0.7) 60%, rgba(9, 9, 9, 0.9));
+      padding: 8px 12px 12px 12px;
+    }
+
+    .app.focus-mode .recording-status {
+      background: rgba(0,0,0,0.4);
+      padding: 4px 16px;
+      font-size: 16px;
+    }
+
+    .app.focus-mode .focus-exit {
+      display: inline-flex !important;
+    }
+
+    .focus-exit {
+      display: none !important;
+    }
+
+    /* Countdown overlay */
+    .countdown-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(8px);
+      font-size: 120px;
+      font-weight: 800;
+      color: #fff;
+      text-shadow: 0 8px 40px rgba(0,0,0,0.8);
+      pointer-events: none;
+      transition: opacity 0.3s;
+    }
+
+    .countdown-overlay.hidden {
+      display: none;
+    }
+
+    /* Preview modal */
+    .preview-modal {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 100;
+      background: rgba(9,9,9,0.95);
+      backdrop-filter: blur(20px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      gap: 20px;
+    }
+
+    .preview-modal.hidden {
+      display: none;
+    }
+
+    .preview-modal video {
+      max-width: 90%;
+      max-height: 70%;
+      border-radius: 12px;
+      background: #000;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.8);
+    }
+
+    .preview-actions {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    /* Toggle buttons for panels */
+    .panel-toggle {
+      position: absolute;
+      z-index: 40;
+      background: rgba(24,24,27,0.8);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #fff;
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 20px;
+      transition: background 0.15s;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    }
+
+    .panel-toggle:hover {
+      background: rgba(39,39,42,0.9);
+    }
+
+    .panel-toggle.left {
+      top: 16px;
+      left: 16px;
+    }
+    .panel-toggle.right {
+      top: 16px;
+      right: 16px;
+    }
+
+    /* Mobile adjustments */
+    @media (max-width: 700px) {
+      .script-paragraph {
+        font-size: var(--font-size, 28px);
+        padding: 0.3em 0.6em;
+      }
+      .editor-panel {
+        width: calc(100% - 32px);
+        left: 16px;
+        top: 70px;
+        max-height: 50vh;
+      }
+      .settings-panel {
+        width: calc(100% - 32px);
+        right: 16px;
+        top: 70px;
+        max-height: 60vh;
+      }
+      .control-bar {
+        padding: 8px 8px 12px 8px;
+      }
+      .btn {
+        padding: 8px 14px;
+        font-size: 13px;
+        min-height: 38px;
+      }
+      .slider-group {
+        padding: 2px 10px;
+        min-height: 38px;
+      }
+      .slider-group input[type="range"] {
+        width: 70px;
+      }
+      .recording-status {
+        font-size: 15px;
+        padding: 4px 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.3.1",
+        "react-dom": "https://esm.sh/react-dom@18.3.1",
+        "react-dom/client": "https://esm.sh/react-dom@18.3.1/client"
+      }
+    }
+  </script>
+
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script type="text/babel" data-type="module" data-presets="react">
+    import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+    import ReactDOM from 'react-dom/client';
+
+    // ---------- Utility functions ----------
+    const formatTime = (seconds) => {
+      const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+      const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+      return `${m}:${s}`;
+    };
+
+    const generateId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+    // Split script into paragraphs (preserve empty lines as separate paragraphs)
+    const splitScript = (text) => {
+      if (!text.trim()) return [];
+      // Split by newlines and keep empty lines as paragraphs (they create spacing)
+      return text.split(/\r?\n/).map(line => line.trim()).filter((line, idx, arr) => {
+        // Keep empty lines to preserve spacing, but merge multiple empties into one
+        if (line === '') {
+          // Keep only if previous is not empty
+          return idx === 0 || arr[idx - 1] !== '';
+        }
+        return true;
+      });
+    };
+
+    // ---------- App Component ----------
+    const App = () => {
+      // ---- State: camera & recording ----
+      const [cameraStream, setCameraStream] = useState(null);
+      const [videoDevices, setVideoDevices] = useState([]);
+      const [audioDevices, setAudioDevices] = useState([]);
+      const [selectedVideoDevice, setSelectedVideoDevice] = useState('');
+      const [selectedAudioDevice, setSelectedAudioDevice] = useState('');
+      const [mirrorCamera, setMirrorCamera] = useState(true);
+      const [isRecording, setIsRecording] = useState(false);
+      const [recordingTime, setRecordingTime] = useState(0);
+      const [mediaRecorder, setMediaRecorder] = useState(null);
+      const [recordedBlob, setRecordedBlob] = useState(null);
+      const [showPreview, setShowPreview] = useState(false);
+      const [countdown, setCountdown] = useState(null); // null or number
+      const [countdownEnabled, setCountdownEnabled] = useState(true);
+      const [countdownDuration, setCountdownDuration] = useState(3); // seconds
+
+      // ---- State: script ----
+      const [scriptText, setScriptText] = useState(
+        "Hey, I'm Joshua Oladigbolu. I'm a full-stack developer, just over two years now, and I mostly work with TypeScript, React, Next.js, and Node.js.\n\nI got into development because I genuinely enjoy building things people use. There's something special about seeing an idea turn into something tangible that someone else can interact with.\n\nWelcome to my channel."
+      );
+      const [savedScripts, setSavedScripts] = useState([]);
+      const [currentScriptId, setCurrentScriptId] = useState(null);
+
+      // ---- State: teleprompter display ----
+      const [fontSize, setFontSize] = useState(36);
+      const [lineHeight, setLineHeight] = useState(1.6);
+      const [textWidth, setTextWidth] = useState(800);
+      const [fontWeight, setFontWeight] = useState(500);
+      const [textAlign, setTextAlign] = useState('center');
+      const [overlayOpacity, setOverlayOpacity] = useState(0.35);
+      const [textPosition, setTextPosition] = useState(0.35); // 0=top, 1=bottom, default 0.35 (near top for camera)
+      const [guideEnabled, setGuideEnabled] = useState(false);
+      const [guidePosition, setGuidePosition] = useState(0.45); // 0=top, 1=bottom
+      const [highlightEnabled, setHighlightEnabled] = useState(false);
+
+      // ---- State: scrolling ----
+      const [scrollSpeed, setScrollSpeed] = useState(1.0); // multiplier
+      const [isPlaying, setIsPlaying] = useState(false);
+      const [scrollOffset, setScrollOffset] = useState(0); // in pixels
+      const scrollContainerRef = useRef(null);
+      const animationRef = useRef(null);
+      const lastTimestampRef = useRef(null);
+      const scrollOffsetRef = useRef(0);
+      const isPlayingRef = useRef(false);
+      const scrollSpeedRef = useRef(1.0);
+
+      // ---- State: UI panels ----
+      const [showEditor, setShowEditor] = useState(true);
+      const [showSettings, setShowSettings] = useState(true);
+      const [focusMode, setFocusMode] = useState(false);
+
+      // ---- Refs for media ----
+      const videoRef = useRef(null);
+      const mediaRecorderRef = useRef(null);
+      const recordedChunksRef = useRef([]);
+      const timerRef = useRef(null);
+      const countdownIntervalRef = useRef(null);
+      const previewVideoRef = useRef(null);
+
+      // Sync refs with state for animation loop
+      useEffect(() => { scrollOffsetRef.current = scrollOffset; }, [scrollOffset]);
+      useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+      useEffect(() => { scrollSpeedRef.current = scrollSpeed; }, [scrollSpeed]);
+
+      // ---- Load saved scripts from localStorage ----
+      useEffect(() => {
+        const stored = localStorage.getItem('teleprompter_scripts');
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            setSavedScripts(parsed);
+            if (parsed.length > 0 && !currentScriptId) {
+              // Don't auto-load, let user choose
+            }
+          } catch (e) { /* ignore */ }
+        }
+      }, []);
+
+      // ---- Save scripts to localStorage when changed ----
+      useEffect(() => {
+        if (savedScripts.length > 0) {
+          localStorage.setItem('teleprompter_scripts', JSON.stringify(savedScripts));
+        } else {
+          localStorage.removeItem('teleprompter_scripts');
+        }
+      }, [savedScripts]);
+
+      // ---- Camera setup ----
+      const startCamera = useCallback(async (videoDeviceId, audioDeviceId) => {
+        // Stop existing stream
+        if (cameraStream) {
+          cameraStream.getTracks().forEach(track => track.stop());
+        }
+
+        try {
+          const constraints = {
+            video: videoDeviceId ? { deviceId: { exact: videoDeviceId } } : true,
+            audio: audioDeviceId ? { deviceId: { exact: audioDeviceId } } : true,
+          };
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          setCameraStream(stream);
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+          }
+        } catch (err) {
+          console.error('Error accessing camera:', err);
+          alert('Could not access camera. Please ensure permissions are granted.');
+        }
+      }, [cameraStream]);
+
+      // Enumerate devices
+      const enumerateDevices = useCallback(async () => {
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const videoInputs = devices.filter(d => d.kind === 'videoinput');
+          const audioInputs = devices.filter(d => d.kind === 'audioinput');
+          setVideoDevices(videoInputs);
+          setAudioDevices(audioInputs);
+          if (videoInputs.length > 0 && !selectedVideoDevice) {
+            setSelectedVideoDevice(videoInputs[0].deviceId);
+          }
+          if (audioInputs.length > 0 && !selectedAudioDevice) {
+            setSelectedAudioDevice(audioInputs[0].deviceId);
+          }
+        } catch (err) {
+          console.error('Error enumerating devices:', err);
+        }
+      }, [selectedVideoDevice, selectedAudioDevice]);
+
+      // Initialize camera on mount
+      useEffect(() => {
+        enumerateDevices();
+        startCamera();
+        // Request permissions by calling getUserMedia
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+          .then(() => {
+            enumerateDevices();
+          })
+          .catch(() => {});
+        return () => {
+          if (cameraStream) {
+            cameraStream.getTracks().forEach(track => track.stop());
+          }
+        };
+      }, []);
+
+      // Change camera when device selection changes
+      useEffect(() => {
+        if (selectedVideoDevice || selectedAudioDevice) {
+          startCamera(selectedVideoDevice, selectedAudioDevice);
+        }
+      }, [selectedVideoDevice, selectedAudioDevice]);
+
+      // Mirror camera
+      useEffect(() => {
+        if (videoRef.current) {
+          videoRef.current.style.transform = mirrorCamera ? 'scaleX(-1)' : 'scaleX(1)';
+        }
+      }, [mirrorCamera]);
+
+      // ---- Auto-scroll animation loop ----
+      useEffect(() => {
+        const step = (timestamp) => {
+          if (!lastTimestampRef.current) {
+            lastTimestampRef.current = timestamp;
+          }
+          const delta = Math.min(timestamp - lastTimestampRef.current, 50); // cap at 50ms
+          lastTimestampRef.current = timestamp;
+
+          if (isPlayingRef.current && !isRecording) {
+            // Base speed: 40 pixels per second at 1.0x
+            const pixelsPerSecond = 40 * scrollSpeedRef.current;
+            const pixelsToMove = (pixelsPerSecond * delta) / 1000;
+
+            setScrollOffset(prev => {
+              const newOffset = prev + pixelsToMove;
+              // Clamp to max scroll
+              const container = scrollContainerRef.current;
+              if (container) {
+                const maxScroll = container.scrollHeight - container.clientHeight;
+                if (newOffset >= maxScroll) {
+                  setIsPlaying(false);
+                  return maxScroll;
+                }
+              }
+              return newOffset;
+            });
+          }
+          animationRef.current = requestAnimationFrame(step);
+        };
+
+        animationRef.current = requestAnimationFrame(step);
+        return () => {
+          if (animationRef.current) {
+            cancelAnimationFrame(animationRef.current);
+          }
+        };
+      }, [isRecording]);
+
+      // Apply scroll offset to container
+      useEffect(() => {
+        if (scrollContainerRef.current) {
+          scrollContainerRef.current.scrollTop = scrollOffset;
+        }
+      }, [scrollOffset]);
+
+      // ---- Manual scroll detection – pause auto-scroll ----
+      const handleManualScroll = useCallback(() => {
+        if (isPlaying) {
+          setIsPlaying(false);
+        }
+        // Update scroll offset from actual scroll position
+        if (scrollContainerRef.current) {
+          setScrollOffset(scrollContainerRef.current.scrollTop);
+        }
+      }, [isPlaying]);
+
+      // ---- Keyboard shortcuts ----
+      useEffect(() => {
+        const handleKeyDown = (e) => {
+          // Ignore if focus is in textarea or input
+          if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') {
+            return;
+          }
+          switch (e.key) {
+            case ' ':
+              e.preventDefault();
+              setIsPlaying(prev => !prev);
+              break;
+            case 'ArrowUp':
+              e.preventDefault();
+              setScrollSpeed(prev => Math.min(3.0, +(prev + 0.1).toFixed(1)));
+              break;
+            case 'ArrowDown':
+              e.preventDefault();
+              setScrollSpeed(prev => Math.max(0.1, +(prev - 0.1).toFixed(1)));
+              break;
+            case 'r':
+            case 'R':
+              e.preventDefault();
+              setScrollOffset(0);
+              if (scrollContainerRef.current) {
+                scrollContainerRef.current.scrollTop = 0;
+              }
+              setIsPlaying(false);
+              break;
+            default:
+              break;
+          }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+      }, []);
+
+      // ---- Recording logic ----
+      const startRecording = useCallback(() => {
+        if (!cameraStream) {
+          alert('Camera not ready');
+          return;
+        }
+
+        // Countdown
+        if (countdownEnabled) {
+          setCountdown(countdownDuration);
+          let remaining = countdownDuration;
+          countdownIntervalRef.current = setInterval(() => {
+            remaining -= 1;
+            if (remaining <= 0) {
+              clearInterval(countdownIntervalRef.current);
+              setCountdown(null);
+              actuallyStartRecording();
+            } else {
+              setCountdown(remaining);
+            }
+          }, 1000);
+        } else {
+          actuallyStartRecording();
+        }
+      }, [cameraStream, countdownEnabled, countdownDuration]);
+
+      const actuallyStartRecording = useCallback(() => {
+        if (!cameraStream) return;
+
+        // Stop any existing recorder
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+        }
+
+        const options = { mimeType: 'video/webm;codecs=vp9,opus' };
+        let recorder;
+        try {
+          recorder = new MediaRecorder(cameraStream, options);
+        } catch (e) {
+          // Fallback
+          try {
+            recorder = new MediaRecorder(cameraStream, { mimeType: 'video/webm' });
+          } catch (e2) {
+            alert('MediaRecorder not supported in this browser.');
+            return;
+          }
+        }
+
+        recordedChunksRef.current = [];
+        recorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            recordedChunksRef.current.push(event.data);
+          }
+        };
+
+        recorder.onstop = () => {
+          const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+          setRecordedBlob(blob);
+          setShowPreview(true);
+          setIsRecording(false);
+          setRecordingTime(0);
+          if (timerRef.current) {
+            clearInterval(timerRef.current);
+            timerRef.current = null;
+          }
+          // Clean up stream tracks? Keep for next recording
+        };
+
+        recorder.start(1000); // collect data every second
+        mediaRecorderRef.current = recorder;
+        setMediaRecorder(recorder);
+
+        setIsRecording(true);
+        setRecordingTime(0);
+        // Start timer
+        timerRef.current = setInterval(() => {
+          setRecordingTime(prev => prev + 1);
+        }, 1000);
+      }, [cameraStream]);
+
+      const stopRecording = useCallback(() => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+        }
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+        if (countdownIntervalRef.current) {
+          clearInterval(countdownIntervalRef.current);
+          countdownIntervalRef.current = null;
+          setCountdown(null);
+        }
+        setIsRecording(false);
+      }, []);
+
+      // Clean up on unmount
+      useEffect(() => {
+        return () => {
+          if (cameraStream) {
+            cameraStream.getTracks().forEach(track => track.stop());
+          }
+          if (timerRef.current) clearInterval(timerRef.current);
+          if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            mediaRecorderRef.current.stop();
+          }
+        };
+      }, [cameraStream]);
+
+      // ---- Script management ----
+      const loadScript = (id) => {
+        const script = savedScripts.find(s => s.id === id);
+        if (script) {
+          setScriptText(script.text);
+          setCurrentScriptId(id);
+        }
+      };
+
+      const saveScript = () => {
+        if (!scriptText.trim()) return;
+        const name = prompt('Script name:', `Script ${savedScripts.length + 1}`);
+        if (!name) return;
+        const newScript = { id: generateId(), name, text: scriptText };
+        setSavedScripts(prev => [...prev, newScript]);
+        setCurrentScriptId(newScript.id);
+      };
+
+      const deleteScript = (id, e) => {
+        e.stopPropagation();
+        if (window.confirm('Delete this script?')) {
+          setSavedScripts(prev => prev.filter(s => s.id !== id));
+          if (currentScriptId === id) {
+            setCurrentScriptId(null);
+          }
+        }
+      };
+
+      const exportScript = () => {
+        const blob = new Blob([scriptText], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `teleprompter-script-${new Date().toISOString().slice(0, 10)}.txt`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      const importScript = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          setScriptText(ev.target.result);
+        };
+        reader.readAsText(file);
+        e.target.value = '';
+      };
+
+      // ---- Download recording ----
+      const downloadRecording = () => {
+        if (!recordedBlob) return;
+        const url = URL.createObjectURL(recordedBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `teleprompter-recording-${new Date().toISOString().slice(0, 10)}.webm`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      // ---- Focus mode toggle ----
+      const toggleFocusMode = () => {
+        setFocusMode(prev => !prev);
+      };
+
+      // ---- Render script paragraphs ----
+      const paragraphs = useMemo(() => {
+        return splitScript(scriptText);
+      }, [scriptText]);
+
+      // Apply CSS variables for styling
+      const scriptStyle = {
+        '--font-size': `${fontSize}px`,
+        '--line-height': lineHeight,
+        '--text-width': `${textWidth}px`,
+        '--font-weight': fontWeight,
+        '--text-align': textAlign,
+        '--overlay-opacity': overlayOpacity,
+      };
+
+      // Calculate guide position in pixels from top
+      const guideTop = `${guidePosition * 100}%`;
+
+      // Text position affects the scroll content's top padding? 
+      // Instead we can set a top margin on the script content to position the text vertically.
+      // But textPosition is 0=top, 1=bottom of viewport. We'll use it as padding-top percentage of viewport.
+      // Better: we set a spacer at the top of the scroll content so the first line appears at the desired position.
+      // We'll compute a top padding based on viewport height. But since viewport height is dynamic, we need a ref.
+      // Simpler: use flex on script-content with padding-top as percentage? Percentage padding is relative to width, not height.
+      // Instead we can use a min-height spacer at the top: height = textPosition * viewport height.
+      // We'll use a ref to the viewport to get its height and set spacer height dynamically.
+      const [viewportHeight, setViewportHeight] = useState(600);
+      const viewportRef = useRef(null);
+
+      useEffect(() => {
+        const updateHeight = () => {
+          if (viewportRef.current) {
+            setViewportHeight(viewportRef.current.clientHeight);
+          }
+        };
+        updateHeight();
+        window.addEventListener('resize', updateHeight);
+        return () => window.removeEventListener('resize', updateHeight);
+      }, []);
+
+      // Spacer height: textPosition * viewportHeight
+      const topSpacerHeight = Math.max(0, textPosition * viewportHeight - 20); // adjust for padding
+
+      // Highlight detection: find paragraph closest to guide line
+      const highlightIndex = useMemo(() => {
+        if (!highlightEnabled || !scrollContainerRef.current) return -1;
+        const container = scrollContainerRef.current;
+        const guideY = guidePosition * container.clientHeight;
+        // Get all paragraph elements
+        const paraElements = container.querySelectorAll('.script-paragraph');
+        let closestIndex = -1;
+        let minDistance = Infinity;
+        paraElements.forEach((el, idx) => {
+          const rect = el.getBoundingClientRect();
+          const containerRect = container.getBoundingClientRect();
+          const paraCenter = rect.top + rect.height / 2 - containerRect.top;
+          const distance = Math.abs(paraCenter - guideY);
+          if (distance < minDistance) {
+            minDistance = distance;
+            closestIndex = idx;
+          }
+        });
+        return closestIndex;
+      }, [highlightEnabled, guidePosition, scrollOffset, paragraphs, viewportHeight]);
+
+      return (
+        <div className={`app ${focusMode ? 'focus-mode' : ''}`} style={scriptStyle}>
+          {/* Camera video */}
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className={`camera-video ${mirrorCamera ? '' : 'no-mirror'}`}
+          />
+
+          {/* Teleprompter layer */}
+          <div className="teleprompter-layer">
+            {/* Reading guide */}
+            {guideEnabled && (
+              <div className="reading-guide" style={{ top: guideTop }} />
+            )}
+
+            {/* Script viewport */}
+            <div
+              className="script-viewport"
+              ref={(el) => {
+                viewportRef.current = el;
+                scrollContainerRef.current = el;
+              }}
+              onScroll={handleManualScroll}
+              onWheel={handleManualScroll}
+              onTouchMove={handleManualScroll}
+            >
+              {/* Spacer to position text vertically */}
+              <div style={{ height: `${topSpacerHeight}px`, flexShrink: 0 }} />
+              <div className="script-content">
+                {paragraphs.map((para, idx) => (
+                  <div
+                    key={idx}
+                    className={`script-paragraph ${highlightEnabled && idx === highlightIndex ? 'highlight' : ''}`}
+                  >
+                    {para || '\u00A0'}
+                  </div>
+                ))}
+              </div>
+              {/* Bottom spacer so last line can scroll up */}
+              <div style={{ height: '40vh', flexShrink: 0 }} />
+            </div>
+          </div>
+
+          {/* Countdown overlay */}
+          {countdown !== null && (
+            <div className="countdown-overlay">
+              {countdown > 0 ? countdown : 'RECORDING'}
+            </div>
+          )}
+
+          {/* Panel toggles */}
+          {!focusMode && (
+            <>
+              <div className="panel-toggle left" onClick={() => setShowEditor(prev => !prev)} title="Toggle script editor">
+                {showEditor ? '✕' : '📝'}
+              </div>
+              <div className="panel-toggle right" onClick={() => setShowSettings(prev => !prev)} title="Toggle settings">
+                {showSettings ? '✕' : '⚙️'}
+              </div>
+            </>
+          )}
+
+          {/* Editor panel */}
+          {!focusMode && (
+            <div className={`editor-panel ${showEditor ? '' : 'hidden'}`}>
+              <h3>
+                Script
+                <button className="btn secondary" style={{ padding: '2px 10px', fontSize: '12px', minHeight: '28px' }} onClick={() => setShowEditor(false)}>Hide</button>
+              </h3>
+              <textarea
+                value={scriptText}
+                onChange={(e) => setScriptText(e.target.value)}
+                placeholder="Paste your script here..."
+              />
+              <div className="editor-actions">
+                <button className="btn primary" onClick={() => { setShowEditor(false); setScrollOffset(0); setIsPlaying(false); }}>Start Teleprompter</button>
+                <button className="btn secondary" onClick={saveScript}>Save</button>
+                <button className="btn secondary" onClick={exportScript}>Export</button>
+                <label className="btn secondary" style={{ cursor: 'pointer' }}>
+                  Import
+                  <input type="file" accept=".txt" onChange={importScript} style={{ display: 'none' }} />
+                </label>
+              </div>
+              {savedScripts.length > 0 && (
+                <div className="saved-scripts">
+                  {savedScripts.map(s => (
+                    <div key={s.id} className="saved-script-item" onClick={() => loadScript(s.id)}>
+                      <span>{s.name}</span>
+                      <span className="delete-script" onClick={(e) => deleteScript(s.id, e)}>🗑</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Settings panel */}
+          {!focusMode && (
+            <div className={`settings-panel ${showSettings ? '' : 'hidden'}`}>
+              <h3 style={{ display: 'flex', justifyContent: 'space-between' }}>
+                Settings
+                <button className="btn secondary" style={{ padding: '2px 10px', fontSize: '12px', minHeight: '28px' }} onClick={() => setShowSettings(false)}>Hide</button>
+              </h3>
+
+              {/* Text position */}
+              <div className="settings-group">
+                <label>Text Position <span>{Math.round(textPosition * 100)}%</span></label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={textPosition}
+                  onChange={(e) => setTextPosition(parseFloat(e.target.value))}
+                />
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#A1A1AA' }}>
+                  <span>Top (near camera)</span>
+                  <span>Bottom</span>
+                </div>
+              </div>
+
+              {/* Overlay opacity */}
+              <div className="settings-group">
+                <label>Overlay Opacity <span>{Math.round(overlayOpacity * 100)}%</span></label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={overlayOpacity}
+                  onChange={(e) => setOverlayOpacity(parseFloat(e.target.value))}
+                />
+              </div>
+
+              {/* Font size */}
+              <div className="settings-group">
+                <label>Font Size <span>{fontSize}px</span></label>
+                <input
+                  type="range"
+                  min="20"
+                  max="80"
+                  step="1"
+                  value={fontSize}
+                  onChange={(e) => setFontSize(parseInt(e.target.value))}
+                />
+              </div>
+
+              {/* Line height */}
+              <div className="settings-group">
+                <label>Line Height <span>{lineHeight.toFixed(1)}</span></label>
+                <input
+                  type="range"
+                  min="1.2"
+                  max="2.5"
+                  step="0.1"
+                  value={lineHeight}
+                  onChange={(e) => setLineHeight(parseFloat(e.target.value))}
+                />
+              </div>
+
+              {/* Text width */}
+              <div className="settings-group">
+                <label>Text Width <span>{textWidth}px</span></label>
+                <input
+                  type="range"
+                  min="300"
+                  max="1200"
+                  step="10"
+                  value={textWidth}
+                  onChange={(e) => setTextWidth(parseInt(e.target.value))}
+                />
+              </div>
+
+              {/* Font weight */}
+              <div className="settings-group">
+                <label>Font Weight</label>
+                <select value={fontWeight} onChange={(e) => setFontWeight(parseInt(e.target.value))}>
+                  <option value="300">Light</option>
+                  <option value="400">Normal</option>
+                  <option value="500">Medium</option>
+                  <option value="600">Semi-Bold</option>
+                  <option value="700">Bold</option>
+                </select>
+              </div>
+
+              {/* Text align */}
+              <div className="settings-group">
+                <label>Text Align</label>
+                <select value={textAlign} onChange={(e) => setTextAlign(e.target.value)}>
+                  <option value="left">Left</option>
+                  <option value="center">Center</option>
+                  <option value="right">Right</option>
+                </select>
+              </div>
+
+              {/* Reading guide */}
+              <div className="toggle-row">
+                <span>Reading Guide</span>
+                <button
+                  className={`toggle-switch ${guideEnabled ? 'active' : ''}`}
+                  onClick={() => setGuideEnabled(prev => !prev)}
+                />
+              </div>
+              {guideEnabled && (
+                <div className="settings-group">
+                  <label>Guide Position <span>{Math.round(guidePosition * 100)}%</span></label>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={guidePosition}
+                    onChange={(e) => setGuidePosition(parseFloat(e.target.value))}
+                  />
+                </div>
+              )}
+
+              {/* Highlight current line */}
+              <div className="toggle-row">
+                <span>Highlight Current Line</span>
+                <button
+                  className={`toggle-switch ${highlightEnabled ? 'active' : ''}`}
+                  onClick={() => setHighlightEnabled(prev => !prev)}
+                />
+              </div>
+
+              {/* Camera controls */}
+              <hr style={{ borderColor: 'rgba(255,255,255,0.08)', margin: '4px 0' }} />
+              <div className="settings-group">
+                <label>Camera</label>
+                <select value={selectedVideoDevice} onChange={(e) => setSelectedVideoDevice(e.target.value)}>
+                  {videoDevices.map(d => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${d.deviceId.slice(0, 6)}`}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="settings-group">
+                <label>Microphone</label>
+                <select value={selectedAudioDevice} onChange={(e) => setSelectedAudioDevice(e.target.value)}>
+                  {audioDevices.map(d => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Mic ${d.deviceId.slice(0, 6)}`}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="toggle-row">
+                <span>Mirror Camera</span>
+                <button
+                  className={`toggle-switch ${mirrorCamera ? 'active' : ''}`}
+                  onClick={() => setMirrorCamera(prev => !prev)}
+                />
+              </div>
+
+              {/* Countdown */}
+              <div className="settings-group">
+                <label>Countdown</label>
+                <select
+                  value={countdownEnabled ? countdownDuration : 0}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value);
+                    if (val === 0) {
+                      setCountdownEnabled(false);
+                    } else {
+                      setCountdownEnabled(true);
+                      setCountdownDuration(val);
+                    }
+                  }}
+                >
+                  <option value="0">Off</option>
+                  <option value="3">3 seconds</option>
+                  <option value="5">5 seconds</option>
+                  <option value="10">10 seconds</option>
+                </select>
+              </div>
+            </div>
+          )}
+
+          {/* Bottom control bar */}
+          <div className="control-bar">
+            {/* Recording status */}
+            {isRecording && (
+              <div className="recording-status">
+                <span className="rec-dot" />
+                <span className="timer">{formatTime(recordingTime)}</span>
+              </div>
+            )}
+
+            {/* Controls row */}
+            <div className="controls-row">
+              {/* Play/Pause */}
+              <button className="btn secondary" onClick={() => setIsPlaying(prev => !prev)}>
+                {isPlaying ? '⏸' : '▶'}
+              </button>
+              {/* Restart */}
+              <button className="btn secondary" onClick={() => { setScrollOffset(0); if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0; setIsPlaying(false); }}>
+                ↺
+              </button>
+
+              {/* Speed slider */}
+              <div className="slider-group">
+                <span>Speed</span>
+                <input
+                  type="range"
+                  min="0.1"
+                  max="3.0"
+                  step="0.1"
+                  value={scrollSpeed}
+                  onChange={(e) => setScrollSpeed(parseFloat(e.target.value))}
+                />
+                <span>{scrollSpeed.toFixed(1)}x</span>
+              </div>
+
+              {/* Record button */}
+              {!isRecording ? (
+                <button className="btn record" onClick={startRecording}>
+                  🔴 Record
+                </button>
+              ) : (
+                <button className="btn record" onClick={stopRecording}>
+                  ⏹ Stop
+                </button>
+              )}
+
+              {/* Focus mode toggle */}
+              <button className="btn secondary focus-visible" onClick={toggleFocusMode}>
+                {focusMode ? 'Exit Focus' : 'Focus'}
+              </button>
+
+              {/* Preview if recorded */}
+              {recordedBlob && !isRecording && (
+                <button className="btn secondary" onClick={() => setShowPreview(true)}>
+                  Preview
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Preview modal */}
+          {showPreview && recordedBlob && (
+            <div className="preview-modal">
+              <h2 style={{ fontSize: '20px', fontWeight: '500' }}>Recording Complete</h2>
+              <video
+                ref={previewVideoRef}
+                src={URL.createObjectURL(recordedBlob)}
+                controls
+                autoPlay
+                style={{ maxWidth: '90%', maxHeight: '60vh' }}
+              />
+              <div className="preview-actions">
+                <button className="btn primary" onClick={downloadRecording}>Download Video</button>
+                <button className="btn secondary" onClick={() => { setShowPreview(false); setRecordedBlob(null); }}>Record Again</button>
+                <button className="btn secondary" onClick={() => setShowPreview(false)}>Close</button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
